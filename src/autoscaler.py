@@ -58,6 +58,7 @@ class Scaler:
 
         self.namespace_name = config['namespace_name']
         self.deployment_name = config['deployment_name']
+        self.deployment_type = config.get('deployment_type', 'Deployments')
         self.metric_name = config['metric']['name']
         self.low_value = float(config['metric']['low_value'])
         self.high_value = float(config['metric']['high_value'])
@@ -67,8 +68,14 @@ class Scaler:
         self.max_replicas = int(config['max_replicas'])
 
         self.metric = cli.get_metric_by_name(self.metric_name)
-        self.server_group = cli.get_server_group('Kubernetes/Namespaces/%s/Deployments/%s' %
-                                                 (self.namespace_name, self.deployment_name))
+        if self.metric is None:
+            raise Exception("Could not find metric '%s'" % self.metric_name)
+
+        group_path = 'Kubernetes/Namespaces/%s/%s/%s' % \
+                     (self.namespace_name, self.deployment_type, self.deployment_name)
+        self.server_group = cli.get_server_group(group_path)
+        if self.server_group is None:
+            raise Exception("Could not find server group '%s'" % group_path)
 
         self.kubernetes_appsv1api = kubernetes_appsv1api
         self.last_scaling = 0
@@ -161,8 +168,8 @@ def run_scalers(cli_path, api_url, app_id, access_token, config, interval):
             scaler = Scaler(item, cli, kubernetes_api)
             logging.info('Starting scaler %s', scaler)
             run_and_schedule(scaler, scheduler, interval)
-        except Exception:
-            logging.exception('Failed to initialise scaler with configuration %s', item)
+        except Exception as e:
+            logging.exception('Failed to initialise scaler with configuration %s: %s', item, e)
 
     scheduler.run()
 
