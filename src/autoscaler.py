@@ -53,7 +53,7 @@ class CliWrapper:
 class Scaler:
     '''A Scaler retrieves the CoScale metrics using CLI and updates the replicas in Kubernetes.'''
 
-    def __init__(self, config, cli, kubernetes_appsv1api):
+    def __init__(self, config, cli):
         self.cli = cli
 
         self.namespace_name = config['namespace_name']
@@ -67,17 +67,19 @@ class Scaler:
         self.min_replicas = int(config['min_replicas'])
         self.max_replicas = int(config['max_replicas'])
 
+        if self.deployment_type != 'Deployments' and self.deployment_type != 'Deployment configs':
+            raise Exception('Unsupported deployment type "%s"' % self.deployment_type)
+
         self.metric = cli.get_metric_by_name(self.metric_name)
         if self.metric is None:
-            raise Exception("Could not find metric '%s'" % self.metric_name)
+            raise Exception('Could not find metric "%s"' % self.metric_name)
 
         group_path = 'Kubernetes/Namespaces/%s/%s/%s' % \
                      (self.namespace_name, self.deployment_type, self.deployment_name)
         self.server_group = cli.get_server_group(group_path)
         if self.server_group is None:
-            raise Exception("Could not find server group '%s'" % group_path)
+            raise Exception('Could not find server group "%s"' % group_path)
 
-        self.kubernetes_appsv1api = kubernetes_appsv1api
         self.last_scaling = 0
 
         logging.info('Scaler %s is using metric id %d and server group id %s',
@@ -124,22 +126,35 @@ class Scaler:
 
     def current_replicas(self):
         '''Get the current number of replicas from the Kubernetes API.'''
-        resp = self.kubernetes_appsv1api.read_namespaced_deployment_scale(self.deployment_name,
-                                                                          self.namespace_name)
-        return resp.status.replicas
+        if self.deployment_type == 'Deployments':
+            resp = kubernetes.client.AppsV1Api().read_namespaced_deployment_scale(
+                self.deployment_name, self.namespace_name)
+            return resp.status.replicas
+        else:
+            resp = kubernetes.client.CustomObjectsApi().get_namespaced_custom_object(
+                'apps.openshift.io', 'v1', self.namespace_name,
+                'deploymentconfigs', self.deployment_name)
+            return resp['status']['replicas']
 
     def scale(self, replicas):
         '''Scale the Kubernetes deployment to the given number of replicas.'''
         logging.info('Scaling %s to %d replicas', self, replicas)
 
-        body = kubernetes.client.V1Scale()
-        body.metadata = kubernetes.client.V1ObjectMeta()
-        body.metadata.namespace = self.namespace_name
-        body.metadata.name = self.deployment_name
-        body.spec = kubernetes.client.V1ScaleSpec()
-        body.spec.replicas = replicas
-        self.kubernetes_appsv1api.replace_namespaced_deployment_scale(self.deployment_name,
-                                                                      self.namespace_name, body)
+        if self.deployment_type == 'Deployments':
+            body = kubernetes.client.V1Scale()
+            body.metadata = kubernetes.client.V1ObjectMeta()
+            body.metadata.namespace = self.namespace_name
+            body.metadata.name = self.deployment_name
+            body.spec = kubernetes.client.V1ScaleSpec()
+            body.spec.replicas = replicas
+            kubernetes.client.AppsV1Api().replace_namespaced_deployment_scale(
+                self.deployment_name, self.namespace_name, body)
+        else:
+            body = {'spec':{'replicas':replicas}}
+            kubernetes.client.CustomObjectsApi().patch_namespaced_custom_object(
+                'apps.openshift.io', 'v1', self.namespace_name,
+                'deploymentconfigs', self.deployment_name, body)
+
         self.last_scaling = time.time()
 
     def __str__(self):
@@ -159,13 +174,11 @@ def run_and_schedule(scaler, scheduler, interval):
 def run_scalers(cli_path, api_url, app_id, access_token, config, interval):
     '''Run the scalers in the config dict.'''
     cli = CliWrapper(cli_path, api_url, app_id, access_token)
-    kubernetes_api = kubernetes.client.AppsV1Api()
-
     scheduler = sched.scheduler()
 
     for item in config:
         try:
-            scaler = Scaler(item, cli, kubernetes_api)
+            scaler = Scaler(item, cli)
             logging.info('Starting scaler %s', scaler)
             run_and_schedule(scaler, scheduler, interval)
         except Exception as e:
