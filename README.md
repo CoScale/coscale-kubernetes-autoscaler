@@ -79,7 +79,7 @@ spec:
     spec:
       serviceAccountName: coscale-autoscaler
       containers:
-      - image: coscale/coscale-kubernetes-autoscaler:1.0.0
+      - image: coscale/coscale-kubernetes-autoscaler:1.1.0
         name: autoscaler
         env:
         - name: API_URL
@@ -94,3 +94,67 @@ EOF
 ```
 
 **Don't forget to update API_URL, APP_ID and ACCESS_TOKEN in the example above.**
+
+
+## OpenShift Deployment Configs
+
+The CoScale Autoscaler has support for both Kubernetes Deployments and OpenShift Deployment configs (https://docs.openshift.com/enterprise/3.0/dev_guide/deployments.html).
+
+Add the **deployment_type** field with value **Deployment configs** to the configuration to use the Autoscaler with OpenShift Deployment configs:
+
+```
+[
+  {
+    "namespace_name": "production",
+    "deployment_type": "Deployment configs",
+    "deployment_name": "apache",
+    "metric": {
+      "name": "Docker container cpu usage percent from limit",
+      "low_value": 20,
+      "high_value": 80,
+      "avg_interval_sec": 300
+    },
+    "scale_backoff_sec": 600,
+    "min_replicas": 3,
+    "max_replicas": 10
+  }
+]
+```
+
+Deploying the CoScale autoscaler on OpenShift can be done using the following commands:
+
+```
+oc project coscale
+oc create serviceaccount coscale
+oadm policy add-cluster-role-to-user cluster-admin system:serviceaccount:coscale:coscale
+
+cat << EOF | oc apply -f -
+apiVersion: extensions/v1beta1
+kind: ReplicaSet
+metadata:
+  labels:
+    name: coscale-autoscaler
+  name: coscale-autoscaler
+  namespace: coscale
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        name: coscale-autoscaler
+    spec:
+      serviceAccountName: coscale-autoscaler
+      containers:
+      - image: coscale/coscale-kubernetes-autoscaler:1.1.0
+        name: autoscaler
+        env:
+        - name: API_URL
+          value: "https://api.coscale.com"
+        - name: APP_ID
+          value: "00000000-0000-0000-0000-000000000000"
+        - name: ACCESS_TOKEN
+          value: "00000000-0000-0000-0000-000000000000"
+        - name: SCALER_CONFIG
+          value: '[{"namespace_name":"production","deployment_type":"Deployment configs","deployment_name":"apache","metric":{"name":"Docker container cpu usage percent from limit","low_value":20,"high_value":80,"avg_interval_sec":300},"scale_backoff_sec":600,"min_replicas":3,"max_replicas":10}]'
+EOF
+```
